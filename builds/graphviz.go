@@ -10,42 +10,37 @@ import (
 	"time"
 
 	"github.com/nats-io/nats"
+	"github.com/r3labs/graph"
 	"github.com/spf13/cobra"
 )
 
-type Build struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Status string `json:"status"`
-}
-
-func List(cmd *cobra.Command, args []string) {
-	var builds []Build
+func Graphviz(cmd *cobra.Command, args []string) {
+	var gg map[string]interface{}
 
 	nuri, _ := cmd.Flags().GetString("nats")
-	env, _ := cmd.Flags().GetString("env")
+	buildid, _ := cmd.Flags().GetString("build")
 
 	nc, err := nats.Connect(nuri)
 	if err != nil {
 		panic(err)
 	}
 
-	q := []byte(`{"name": "` + env + `"}`)
-	if env == "" {
-		q = nil
-	}
-
-	msg, err := nc.Request("service.find", q, time.Second)
+	msg, err := nc.Request("service.get.mapping", []byte(`{"id": "`+buildid+`"}`), time.Second)
 	if err != nil {
 		panic(err)
 	}
 
-	err = json.Unmarshal(msg.Data, &builds)
+	err = json.Unmarshal(msg.Data, &gg)
 	if err != nil {
 		panic(err)
 	}
 
-	for _, b := range builds {
-		fmt.Printf("%s  %s  %s\n", b.Name, b.Status, b.ID)
+	g := graph.New()
+
+	err = g.Load(gg)
+	if err != nil {
+		panic(err)
 	}
+
+	fmt.Println(g.Graphviz())
 }
