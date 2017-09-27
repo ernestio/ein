@@ -30,7 +30,7 @@ func Get(cmd *cobra.Command, args []string) {
 		panic(err)
 	}
 
-	msg, err := nc.Request("service.get.mapping", []byte(`{"id": "`+buildid+`"}`), time.Second)
+	msg, err := nc.Request("build.get.mapping", []byte(`{"id": "`+buildid+`"}`), time.Second)
 	if err != nil {
 		panic(err)
 	}
