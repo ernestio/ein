@@ -13,97 +13,35 @@ import (
 	"github.com/fatih/color"
 	"github.com/nats-io/nats"
 	"github.com/olekukonko/tablewriter"
+	"github.com/r3labs/diff"
 	"github.com/r3labs/graph"
 	"github.com/spf13/cobra"
 )
 
+//type components map[string]
+
 type change struct {
-	To, From string
+	created bool
+	deleted bool
+	changes []diff.Change
 }
 
-// type :: component :: changes
-type changes map[string]map[string]map[string]change
+type coutput map[string]map[string][]diff.Change
 
-func (cs *changes) addTo(ctype, name, path, to string) {
-	if (*cs)[ctype] == nil {
-		(*cs)[ctype] = make(map[string]map[string]change)
+func (cl *coutput) add(c diff.Change) {
+	id := c.Path[0]
+	c.Path = c.Path[1:]
+
+	parts := strings.Split(id, "::")
+	if (*cl)[parts[0]] == nil {
+		(*cl)[parts[0]] = make(map[string][]diff.Change)
 	}
 
-	if (*cs)[ctype][name] == nil {
-		(*cs)[ctype][name] = make(map[string]change)
+	if (*cl)[parts[0]][parts[1]] == nil {
+		(*cl)[parts[0]][parts[1]] = make([]diff.Change, 0)
 	}
 
-	_, ok := (*cs)[ctype][name][path]
-	if ok {
-		x := (*cs)[ctype][name][path]
-		x.To = to
-		(*cs)[ctype][name][path] = x
-	} else {
-		(*cs)[ctype][name][path] = change{To: to}
-	}
-}
-
-func (cs *changes) addFrom(ctype, name, path, from string) {
-	if (*cs)[ctype] == nil {
-		(*cs)[ctype] = make(map[string]map[string]change)
-	}
-
-	if (*cs)[ctype][name] == nil {
-		(*cs)[ctype][name] = make(map[string]change)
-	}
-
-	_, ok := (*cs)[ctype][name][path]
-	if ok {
-		x := (*cs)[ctype][name][path]
-		x.From = from
-		(*cs)[ctype][name][path] = x
-	} else {
-		(*cs)[ctype][name][path] = change{From: from}
-	}
-}
-
-func (cs *changes) processFrom(path []string, v interface{}) {
-	if v == nil {
-		v = "-"
-	}
-
-	switch v.(type) {
-	case string:
-		info := strings.Split(path[0], "::")
-		cs.addFrom(info[0], info[1], strings.Join(path[1:], "."), v.(string))
-	case map[string]interface{}:
-		m := v.(map[string]interface{})
-		for k, v := range m {
-			cs.processFrom(append(path, k), v)
-		}
-	default:
-		info := strings.Split(path[0], "::")
-		cs.addFrom(info[0], info[1], strings.Join(path[1:], "."), fmt.Sprint(v))
-	}
-}
-
-func (cs *changes) processTo(path []string, v interface{}) {
-	if v == nil {
-		v = "-"
-	}
-
-	switch v.(type) {
-	case string:
-		info := strings.Split(path[0], "::")
-		cs.addTo(info[0], info[1], strings.Join(path[1:], "."), v.(string))
-	case map[string]interface{}:
-		m := v.(map[string]interface{})
-		for k, v := range m {
-			cs.processTo(append(path, k), v)
-		}
-	default:
-		info := strings.Split(path[0], "::")
-		cs.addTo(info[0], info[1], strings.Join(path[1:], "."), fmt.Sprint(v))
-	}
-}
-
-func skip(s string) bool {
-	return s == "" || s == "-"
+	(*cl)[parts[0]][parts[1]] = append((*cl)[parts[0]][parts[1]], c)
 }
 
 func Diff(cmd *cobra.Command, args []string) {
@@ -132,51 +70,40 @@ func Diff(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	cs := make(changes)
+	co := make(coutput)
 
 	for _, c := range g.Changelog {
-		cs.processFrom(c.Path, c.From)
-		cs.processTo(c.Path, c.To)
+		co.add(c)
 	}
 
-	for t, components := range cs {
-		fmt.Println(strings.ToUpper(t) + "'s")
+	for _, components := range co {
+		fmt.Printf("\n")
 
-		for name, values := range components {
+		for name, changes := range components {
 			fmt.Println("\n" + name)
 
 			table := tablewriter.NewWriter(os.Stdout)
-			table.SetHeader([]string{"Field", "From", "To"})
+			table.SetBorder(false)
+			table.SetHeaderLine(false)
+			table.SetColumnSeparator("")
+			table.SetRowLine(false)
+			table.SetAutoWrapText(false)
 
-			for path, chng := range values {
-				if skip(chng.From) && skip(chng.To) {
-					continue
+			for _, chng := range changes {
+				if chng.From == nil {
+					chng.From = ""
+					chng.To = color.GreenString(fmt.Sprint(chng.To))
+				} else if chng.To == nil {
+					chng.To = ""
+					chng.From = color.RedString(fmt.Sprint(chng.From))
+				} else {
+					chng.From = color.RedString(fmt.Sprint(chng.From))
+					chng.To = color.GreenString(fmt.Sprint(chng.To))
 				}
-
-				if skip(chng.From) && !skip(chng.To) {
-					path = color.GreenString(path)
-					chng.From = color.RedString(`""`)
-					chng.To = color.GreenString(`"` + chng.To + `"`)
-				} else if !skip(chng.From) && skip(chng.To) {
-					path = color.RedString(path)
-					chng.From = color.RedString(`"` + chng.From + `"`)
-					chng.To = color.RedString(`""`)
-				} else if chng.From != chng.To {
-					path = color.YellowString(path)
-					chng.From = color.RedString(`"` + chng.From + `"`)
-					chng.To = color.GreenString(`"` + chng.To + `"`)
-				}
-
-				table.Append([]string{path, chng.From, chng.To})
+				table.Append([]string{strings.Join(chng.Path, "."), `"` + fmt.Sprint(chng.From) + `" => "` + fmt.Sprint(chng.To) + `"`})
 			}
 
 			table.Render()
 		}
 	}
-
-	/*
-
-	 */
-
-	// /output(data)
 }
