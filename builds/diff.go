@@ -20,28 +20,68 @@ import (
 
 //type components map[string]
 
-type change struct {
+type component struct {
 	created bool
 	deleted bool
 	changes []diff.Change
 }
 
-type coutput map[string]map[string][]diff.Change
+func (c *component) add(dc diff.Change) {
+	(*c).changes = append((*c).changes, dc)
+}
 
-func (cl *coutput) add(c diff.Change) {
+type group struct {
+	components map[string]*component
+}
+
+func (g *group) get(c string) *component {
+	if (*g).components[c] == nil {
+		(*g).components[c] = &component{}
+	}
+
+	return (*g).components[c]
+}
+
+type doutput struct {
+	groups map[string]*group
+}
+
+func (o *doutput) get(g string) *group {
+	if (*o).groups[g] == nil {
+		(*o).groups[g] = &group{
+			components: make(map[string]*component),
+		}
+	}
+
+	return (*o).groups[g]
+}
+
+func (o *doutput) add(c diff.Change) {
 	id := c.Path[0]
 	c.Path = c.Path[1:]
 
 	parts := strings.Split(id, "::")
-	if (*cl)[parts[0]] == nil {
-		(*cl)[parts[0]] = make(map[string][]diff.Change)
+	ctype := parts[0]
+	compid := parts[1]
+	last := c.Path[len(c.Path)-1]
+
+	if o.groups == nil {
+		o.groups = make(map[string]*group)
 	}
 
-	if (*cl)[parts[0]][parts[1]] == nil {
-		(*cl)[parts[0]][parts[1]] = make([]diff.Change, 0)
+	x := o.get(ctype).get(compid)
+
+	if last == "_component_id" {
+		switch c.Type {
+		case diff.CREATE:
+			x.created = true
+		case diff.DELETE:
+			x.deleted = true
+		}
+		return
 	}
 
-	(*cl)[parts[0]][parts[1]] = append((*cl)[parts[0]][parts[1]], c)
+	x.add(c)
 }
 
 func Diff(cmd *cobra.Command, args []string) {
@@ -70,17 +110,26 @@ func Diff(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	co := make(coutput)
+	var o doutput
 
 	for _, c := range g.Changelog {
-		co.add(c)
+		o.add(c)
 	}
 
-	for _, components := range co {
+	for gname, grp := range o.groups {
 		fmt.Printf("\n")
 
-		for name, changes := range components {
-			fmt.Println("\n" + name)
+		for cname, cmp := range grp.components {
+			var header string
+			if cmp.created {
+				header = fmt.Sprintf("\n + %s", color.GreenString(gname+"."+cname))
+			} else if cmp.deleted {
+				header = fmt.Sprintf("\n - %s", color.RedString(gname+"."+cname))
+			} else {
+				header = fmt.Sprintf("\n ~ %s", color.YellowString(gname+"."+cname))
+			}
+
+			fmt.Println(header)
 
 			table := tablewriter.NewWriter(os.Stdout)
 			table.SetBorder(false)
@@ -89,7 +138,7 @@ func Diff(cmd *cobra.Command, args []string) {
 			table.SetRowLine(false)
 			table.SetAutoWrapText(false)
 
-			for _, chng := range changes {
+			for _, chng := range cmp.changes {
 				if chng.From == nil {
 					chng.From = ""
 					chng.To = color.GreenString(fmt.Sprint(chng.To))
@@ -100,7 +149,13 @@ func Diff(cmd *cobra.Command, args []string) {
 					chng.From = color.RedString(fmt.Sprint(chng.From))
 					chng.To = color.GreenString(fmt.Sprint(chng.To))
 				}
-				table.Append([]string{strings.Join(chng.Path, "."), `"` + fmt.Sprint(chng.From) + `" => "` + fmt.Sprint(chng.To) + `"`})
+				if cmp.created {
+					table.Append([]string{color.GreenString("  " + strings.Join(chng.Path, ".")), `"` + fmt.Sprint(chng.From) + `" => "` + fmt.Sprint(chng.To) + `"`})
+				} else if cmp.deleted {
+					table.Append([]string{color.RedString("  " + strings.Join(chng.Path, ".")), `"` + fmt.Sprint(chng.From) + `" => "` + fmt.Sprint(chng.To) + `"`})
+				} else {
+					table.Append([]string{color.YellowString("  " + strings.Join(chng.Path, ".")), `"` + fmt.Sprint(chng.From) + `" => "` + fmt.Sprint(chng.To) + `"`})
+				}
 			}
 
 			table.Render()
